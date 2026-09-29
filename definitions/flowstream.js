@@ -1,98 +1,74 @@
-const DB_FILE = 'database.json';
+const DBFILE = 'database.json';
 const DIRECTORY = CONF.directory || PATH.root('flowstream');
+
+CONF.$customtitles = true;
 
 PATH.mkdir(DIRECTORY);
 PATH.mkdir(PATH.private());
 
-var FS = {};
+function skip(key, value) {
+	return key === 'unixsocket' || key === 'env' || key === 'import' || key === 'importscript' || key === 'worker' || key === 'asfiles' ? undefined : value;
+}
 
-FS.version = 1;
-FS.db = {};
-FS.instances = {};
+Flow.on('save', function() {
 
-var saveid;
-
-FS.save = function() {
-	saveid && clearTimeout(saveid);
-	saveid = setTimeout(FS.save_force, 1000);
-};
-
-FS.save_force = function() {
-	saveid = null;
-
-	for (var key in FS.db) {
+	for (let key in Flow.db) {
 		if (key !== 'variables') {
-			var flow = FS.db[key];
+			let flow = Flow.db[key];
 			flow.size = Buffer.byteLength(JSON.stringify(flow));
 		}
 	}
 
 	if (CONF.backup) {
-		PATH.fs.rename(PATH.join(DIRECTORY, DB_FILE), PATH.join(DIRECTORY, DB_FILE.replace(/\.json/, '') + '_' + (new Date()).format('yyyyMMddHHmm') + '.bk'), function() {
-			PATH.fs.writeFile(PATH.join(DIRECTORY, DB_FILE), JSON.stringify(FS.db, null, '\t'), ERROR('FlowStream.save'));
+		PATH.fs.rename(PATH.join(DIRECTORY, DBFILE), PATH.join(DIRECTORY, DBFILE.replace(/\.json/, '') + '_' + (new Date()).format('yyyyMMddHHmm') + '.bk'), function() {
+			PATH.fs.writeFile(PATH.join(DIRECTORY, DBFILE), JSON.stringify(Flow.db, skip, '\t'), ERROR('FlowStream.save'));
 		});
 	} else
-		PATH.fs.writeFile(PATH.join(DIRECTORY, DB_FILE), JSON.stringify(FS.db, null, '\t'), ERROR('FlowStream.save'));
-};
+		PATH.fs.writeFile(PATH.join(DIRECTORY, DBFILE), JSON.stringify(Flow.db, skip, '\t'), ERROR('FlowStream.save'));
+});
 
-FS.init = function(id, next) {
+function init(id, next) {
 
-	var flow = FS.db[id];
+	let flow = Flow.db[id];
 
-	flow.variables2 = FS.db.variables || {};
+	flow.variables2 = Flow.db.variables || {};
 	flow.directory = CONF.directory || PATH.root('/flowstream/');
 	flow.sandbox = CONF.flowstream_sandbox == true;
+	flow.env = PREF.env || 'dev';
 
-	MODULE('flowstream').init(flow, CONF.flowstream_worker, function(err, instance) {
-		instance.httprouting();
-		instance.ondone = () => next();
-		instance.onerror = function(err, source, id, component) {
-			var empty = '---';
-			var output = '';
-			output += '|------------- FlowError: ' + new Date().format('yyyy-MM-dd HH:mm:ss') + '\n';
-			output += '| ' + err.toString() + '\n';
-			output += '| Name: ' + flow.name + '\n';
-			output += '| Source: ' + (source || empty) + '\n';
-			output += '| Instance ID: ' + (id || empty) + '\n';
-			output += '| Component ID: ' + (component || empty);
-			console.error(output);
-			var meta = {};
-			meta.error = err;
-			meta.source = source;
-			meta.id = id;
-			meta.component = component;
-			EMIT('flowstream_error', meta);
-		};
+	if (!flow.memory)
+		flow.memory = CONF.flowstream_memory || 0;
 
-		instance.onsave = function(data) {
-			EMIT('flowstream_save', data);
-			FS.db[id] = data;
-			FS.save();
-		};
+	flow.asfiles = CONF.flowstream_asfiles === true;
+	flow.worker = 'fork'; // "worker", "false"
 
-		FS.instances[id] = instance;
-	});
-};
+	flow.import = 'extensions.js';
+	// flow.importscript = 'instance';
 
-ON('ready', function() {
+	Flow.load(flow, () => next());
 
-	PATH.fs.readFile(PATH.join(DIRECTORY, DB_FILE), function(err, data) {
+	/*
+	Flow.load(flow, function(err, instance) {
+		next();
+	});*/
+}
 
-		FS.db = data ? data.toString('utf8').parseJSON(true) : {};
-		EMIT('flowstream_init', FS.db);
+ON('start', function() {
 
-		if (!FS.db.variables)
-			FS.db.variables = {};
+	PATH.fs.readFile(PATH.join(DIRECTORY, DBFILE), function(err, data) {
 
-		Object.keys(FS.db).wait(function(key, next) {
+		Flow.db = data ? data.toString('utf8').parseJSON(true) : {};
+
+		if (!Flow.db.variables)
+			Flow.db.variables = {};
+
+		Object.keys(Flow.db).wait(function(key, next) {
 			if (key === 'variables')
 				next();
 			else
-				FS.init(key, next);
+				init(key, next);
 		});
 
 	});
 
 });
-
-MAIN.flowstream = FS;
